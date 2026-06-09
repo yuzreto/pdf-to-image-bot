@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, send_file
-from pdf2image import convert_from_bytes
-from pypdf import PdfMerger, PdfReader
+from pypdf import PdfMerger
 import img2pdf
 import io
 
@@ -8,46 +7,50 @@ app = Flask(__name__)
 
 @app.route('/merge_all', methods=['POST'])
 def merge_all_files():
-    # GASから送られてきた複数のファイルを順番通りに受け取る
-    files = request.files.getlist('files')
+    # --- 【修正】連番（files[0], files[1]...）で届くファイルをすべて集める ---
+    files = []
+    index = 0
+    while True:
+        file_key = f'files[{index}]'
+        if file_key in request.files:
+            files.append(request.files[file_key])
+            index += 1
+        else:
+            break
+
+    # 1つもファイルが見つからなかった場合のエラー
     if not files:
         return jsonify({"error": "ファイルが送信されていません"}), 400
     
     merger = PdfMerger()
-    temp_buffers = [] # 一時的なデータを溜める箱
+    temp_buffers = []
 
     try:
         for file in files:
             filename = file.filename.lower()
             file_bytes = file.read()
             
-            # --- ① 元が画像（PNG / JPG）の場合 ---
+            # ① 画像（PNG / JPG）の場合
             if filename.endswith('.png') or filename.endswith('.jpg') or filename.endswith('.jpeg'):
-                # img2pdf を使うと、画像の縦横サイズ・比率を100%維持した「余白ゼロのPDF」が一瞬で作れます
                 pdf_data = img2pdf.convert(file_bytes)
                 pdf_buf = io.BytesIO(pdf_data)
                 merger.append(pdf_buf)
                 temp_buffers.append(pdf_buf)
                 
-            # --- ② 元がPDFの場合 ---
+            # ② PDFの場合
             elif filename.endswith('.pdf'):
-                # ネット印刷のPDFであっても、文字化けやレイアウト崩れ、見切れを絶対に起こさず、
-                # 1ページずつの縦・横サイズを完全に保ったまま、バイナリレベルでそのまま結合します
                 pdf_buf = io.BytesIO(file_bytes)
                 merger.append(pdf_buf)
                 temp_buffers.append(pdf_buf)
 
-        # すべてを合体した1つのPDFデータを作成
         output_pdf_buffer = io.BytesIO()
         merger.write(output_pdf_buffer)
         output_pdf_buffer.seek(0)
         merger.close()
 
-        # 使い終わった一時バッファを閉じる
         for buf in temp_buffers:
             buf.close()
 
-        # 完成した完璧なPDFをGASに送り返す
         return send_file(
             output_pdf_buffer, 
             mimetype='application/pdf', 
